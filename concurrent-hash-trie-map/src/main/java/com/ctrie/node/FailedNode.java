@@ -27,4 +27,8 @@ public final class FailedNode<K, V> extends MainNode<K, V> {
     public String toString() {
         return "FailedNode(" + prev + ")";
     }
+
+    public int cachedSize (Object ct) {
+        throw new UnsupportedOperationException();
+    }
 }

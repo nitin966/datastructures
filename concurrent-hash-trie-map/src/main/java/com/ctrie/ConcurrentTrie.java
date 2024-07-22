@@ -6,6 +6,8 @@ import com.ctrie.node.MainNode;
 import com.ctrie.node.util.INodeUtil;
 import com.ctrie.rdcss.RDCSS_Descriptor;
 
+import java.util.Iterator;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,6 +31,8 @@ public class ConcurrentTrie<K, V> extends ConcurrentHashMap<K, V> {
     /* internal methods */
 
     private final boolean CAS_ROOT(Object ov, Object nv) {
+        if (isReadOnly())
+            throw new IllegalStateException("Attempted to modify a read-only snapshot");
         return rootUpdater.compareAndSet(this, ov, nv);
     }
 
@@ -108,8 +112,7 @@ public class ConcurrentTrie<K, V> extends ConcurrentHashMap<K, V> {
         while (true) {
             IndirectionNode<K, V> r = RDCSS_READ_ROOT(false);
             Optional<V> res = r.recRemove(k, v, hc, 0, null, r.getGen(), this);
-            if (res.isEmpty()) continue;
-            return res;
+            if (res != null) return res;
         }
     }
 
@@ -138,6 +141,8 @@ public class ConcurrentTrie<K, V> extends ConcurrentHashMap<K, V> {
     }
 
     public final ConcurrentTrie<K, V> readOnlySnapshot() {
+        if (!nonReadOnly())
+            return this;
         while (true) {
             IndirectionNode<K, V> r = RDCSS_READ_ROOT(false);
             MainNode<K, V> expmain = r.readCommittedMainNode(this);
@@ -158,12 +163,6 @@ public class ConcurrentTrie<K, V> extends ConcurrentHashMap<K, V> {
     }
 
     public final V lookup(K k) {
-        int hc = ConcurrentTrieUtil.computeHash(k);
-        return (V) lookuphc(k, hc);
-    }
-
-    @Override
-    public final V get(Object k) {
         int hc = ConcurrentTrieUtil.computeHash((K) k);
         Object res = lookuphc((K) k, hc);
         if (res == null) throw new NoSuchElementException();
@@ -171,10 +170,20 @@ public class ConcurrentTrie<K, V> extends ConcurrentHashMap<K, V> {
     }
 
     @Override
+    public final V get(Object k) {
+        return lookup((K) k);
+    }
+
+    @Override
     public final V put(K key, V value) {
         int hc = ConcurrentTrieUtil.computeHash(key);
         Optional<V> result = insertifhc(key, hc, value, null);
         return result.orElse(null);
+    }
+
+    public final void update(K key, V value) {
+        int h = key.hashCode();
+        inserthc(key, h, value);
     }
 
     @Override
@@ -222,13 +231,16 @@ public class ConcurrentTrie<K, V> extends ConcurrentHashMap<K, V> {
         return result.orElse(null);
     }
 
-    /*@Override
-    public Iterator<Map.Entry<K, V>> iterator() {
-        if (nonReadOnly()) return readOnlySnapshot().entrySet().iterator();
+    public Iterator<Entry<K, V>> iterator() {
+        if (!nonReadOnly()) return readOnlySnapshot().entrySet().iterator();
         else return new CtrieIterator<>(this);
-    }*/
+    }
 
-    // Other methods required by the ConcurrentMap interface that are not overridden here can throw UnsupportedOperationException or can be implemented similarly.
-    // Methods like size(), isEmpty(), entrySet(), keySet(), values(), etc., may need to be implemented depending on the full requirements.
+    public Iterator<Map.Entry<K, V>> readOnlyIterator () {
+        if (nonReadOnly ())
+            return readOnlySnapshot().readOnlyIterator();
+        else
+            return new CtrieIterator<> (this);
+    }
 }
 

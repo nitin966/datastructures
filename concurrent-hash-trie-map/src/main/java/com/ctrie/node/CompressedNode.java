@@ -61,9 +61,7 @@ public final class CompressedNode<K, V> extends MainNode<K, V> {
      * @return a new CNode with the updated node
      */
     public CompressedNode<K, V> updatedAt(int pos, BasicNode newNode, Generation newGen) {
-        int len = array.length;
-        BasicNode[] newArray = new BasicNode[len];
-        System.arraycopy(array, 0, newArray, 0, len);
+        BasicNode[] newArray = array.clone();
         newArray[pos] = newNode;
         return new CompressedNode<>(bitmap, newArray, newGen);
     }
@@ -162,7 +160,7 @@ public final class CompressedNode<K, V> extends MainNode<K, V> {
         BasicNode[] tempArray = new BasicNode[array.length];
         for (int i = 0; i < array.length; i++) {
             BasicNode subNode = array[i];
-            if (subNode instanceof IndirectionNode) {
+            if (subNode instanceof IndirectionNode<?,?>) {
                 Object mainNode = ((IndirectionNode<K, V>) subNode).readCommittedMainNode(ct);
                 assert mainNode != null;
                 tempArray[i] = resurrect((IndirectionNode<K, V>) subNode, mainNode);
@@ -220,7 +218,7 @@ public final class CompressedNode<K, V> extends MainNode<K, V> {
         List<String> elements = new ArrayList<>();
         for (BasicNode bn : array) {
             if (bn instanceof SingletonNode<?,?>) {
-                elements.add(((SingletonNode<?,?>) bn).getKeyValuePair().getValue().toString());
+                elements.add(((SingletonNode<?,?>) bn).getValue().toString());
             } else if (bn instanceof IndirectionNode) {
                 elements.add(((IndirectionNode<K, V>) bn).toString().substring(14) + "(" + ((IndirectionNode<K, V>) bn).getGen() + ")");
             }
@@ -247,5 +245,26 @@ public final class CompressedNode<K, V> extends MainNode<K, V> {
                 .collect(Collectors.joining("\n"));
 
         return String.format("%sCompressedNode %x\n%s", indent, bitmap, subNodesString);
+    }
+
+    static <K, V> MainNode<K,V> dual (final SingletonNode<K, V> x, int xhc, final SingletonNode<K, V> y, int yhc, int lev, Generation gen) {
+        if (lev < 35) {
+            int xidx = (xhc >>> lev) & 0x1f;
+            int yidx = (yhc >>> lev) & 0x1f;
+            int bmp = (1 << xidx) | (1 << yidx);
+
+            if (xidx == yidx) {
+                IndirectionNode<K, V> subinode = new IndirectionNode<>(gen);// (TrieMap.inodeupdater)
+                subinode.mainNode = dual (x, xhc, y, yhc, lev + 5, gen);
+                return new CompressedNode<>(bmp, new BasicNode[] { subinode }, gen);
+            } else {
+                if (xidx < yidx)
+                    return new CompressedNode<>(bmp, new BasicNode[] { x, y }, gen);
+                else
+                    return new CompressedNode<>(bmp, new BasicNode[] { y, x }, gen);
+            }
+        } else {
+            return new ListNode<>(Map.of(x.getKey(), x.getValue(), y.getKey(), y.getValue()));
+        }
     }
 }

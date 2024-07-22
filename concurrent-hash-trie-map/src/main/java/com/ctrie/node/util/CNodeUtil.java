@@ -66,7 +66,7 @@ public final class CNodeUtil {
             }
         } else {
             // If the level exceeds the maximum, we convert the structure to an LNode.
-            Map<K,V> values = Map.of(nodeX.getKeyValuePair().getKey(), nodeX.getKeyValuePair().getValue(), nodeY.getKeyValuePair().getKey(), nodeY.getKeyValuePair().getValue());
+            Map<K,V> values = Map.of(nodeX.getKey(), nodeX.getValue(), nodeY.getKey(), nodeY.getValue());
             return new ListNode<>(values);
         }
     }

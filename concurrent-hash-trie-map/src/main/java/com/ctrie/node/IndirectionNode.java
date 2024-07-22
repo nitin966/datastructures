@@ -18,11 +18,13 @@ import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 public final class IndirectionNode<K,V> extends BasicNode {
 
     public static final Object RESTART = new Object();
+    private static final Object KEY_PRESENT = new Object();
+    private static final Object KEY_ABSENT = new Object();
+
     @SuppressWarnings("rawtypes")
     public static final AtomicReferenceFieldUpdater<IndirectionNode, MainNode> UPDATER = AtomicReferenceFieldUpdater.newUpdater(IndirectionNode.class, MainNode.class, "mainNode");
 
-    public volatile MainNode<K, V> mainNode = null;
-    private final CompressedNode<K,V> cn;
+    public volatile MainNode<K, V> mainNode;
     private final Generation gen;
 
     public IndirectionNode(Generation gen) {
@@ -30,8 +32,8 @@ public final class IndirectionNode<K,V> extends BasicNode {
     }
 
     public IndirectionNode(CompressedNode<K,V> cn, Generation gen) {
-        this.cn = cn;
         this.gen = gen;
+        setMainNode(cn);
     }
 
     public Generation getGen() {
@@ -43,15 +45,12 @@ public final class IndirectionNode<K,V> extends BasicNode {
     }
 
     boolean compareAndSetMainNode(MainNode<K,V> oldVal, MainNode<K,V> newVal) {
-        UPDATER.compareAndSet(this, oldVal, newVal);
-        return false;
+        return UPDATER.compareAndSet(this, oldVal, newVal);
     }
 
     public MainNode<K,V> readCommittedMainNode(ConcurrentTrie<K, V> trie) {
-        MainNode<K,V> m = mainNode;
-        MainNode<K,V> prevVal = m.prev;
-        if (prevVal == null) return m;
-        return finalizeCompareAndSetOperation(m, trie);
+        if (mainNode == null || mainNode.prev == null) return mainNode;
+        return finalizeCompareAndSetOperation(mainNode, trie);
     }
 
     private MainNode<K, V> finalizeCompareAndSetOperation(MainNode<K,V> m, ConcurrentTrie<K,V> ct) {
@@ -79,6 +78,7 @@ public final class IndirectionNode<K,V> extends BasicNode {
     }
 
     private boolean compareAndSetWithFinalize(MainNode<K,V> oldVal, MainNode<K,V> newVal, ConcurrentTrie<K,V> trie) {
+        // Set oldVal as newVal's prev.
         newVal.WRITE_PREV(oldVal);
         if (compareAndSetMainNode(oldVal, newVal)) {
             finalizeCompareAndSetOperation(newVal, trie);
@@ -117,6 +117,8 @@ public final class IndirectionNode<K,V> extends BasicNode {
                         return in.recInsert(k, v, hc, lev + 5, this, startGen, trie);
                     } else {
                         if (compareAndSetWithFinalize(cn, cn.renewed(startGen, trie), trie)) {
+                            // Maybe put function in while (true) loop to avoid tail recursion and accidental
+                            // stack overflow.
                             return recInsert(k, v, hc, lev, parent, startGen, trie);
                         } else {
                             return false;
@@ -125,11 +127,11 @@ public final class IndirectionNode<K,V> extends BasicNode {
                 } else if (cn.array[pos] instanceof SingletonNode<?,?>) {
                     @SuppressWarnings("unchecked")
                     SingletonNode<K,V> sn = (SingletonNode<K, V>) cn.array[pos];
-                    if (sn.hashCode() == hc && sn.getKeyValuePair().getKey().equals(k)) {
+                    if (sn.getHash() == hc && sn.getKey().equals(k)) {
                         return compareAndSetWithFinalize(cn, cn.updatedAt(pos, new SingletonNode<>(k, v, hc), gen), trie);
                     } else {
                         CompressedNode<K,V> rn = cn.generation == gen ? cn : cn.renewed(gen, trie);
-                        CompressedNode<K,V> nn = rn.updatedAt(pos, inode(CNodeUtil.createDualNode(sn, sn.hashCode(), new SingletonNode<>(k, v, hc), hc, lev + 5, gen)), gen);
+                        CompressedNode<K,V> nn = rn.updatedAt(pos, inode(CNodeUtil.createDualNode(sn, sn.getHash(), new SingletonNode<>(k, v, hc), hc, lev + 5, gen)), gen);
                         return compareAndSetWithFinalize(cn, nn, trie);
                     }
                 }
@@ -143,7 +145,7 @@ public final class IndirectionNode<K,V> extends BasicNode {
             return false;
         } else if (m instanceof ListNode) {
             ListNode<K,V> ln = (ListNode<K, V>) m;
-            ListNode<K,V> nn = ln.inserted(k, v);
+            MainNode<K,V> nn = ln.inserted(k, v);
             return compareAndSetWithFinalize(ln, nn, trie);
         }
         return false;
@@ -175,39 +177,39 @@ public final class IndirectionNode<K,V> extends BasicNode {
                     @SuppressWarnings("unchecked")
                     SingletonNode<K,V> sn = (SingletonNode<K, V>) cn.array[pos];
                     if (cond == null) {
-                        if (sn.hashCode() == hc && sn.getKeyValuePair().getKey().equals(k)) {
+                        if (sn.getHash() == hc && sn.getKey().equals(k)) {
                             if (compareAndSetWithFinalize(cn, cn.updatedAt(pos, new SingletonNode<>(k, v, hc), gen), trie)) {
-                                return Optional.of(sn.getKeyValuePair().getValue());
+                                return Optional.of(sn.getValue());
                             } else {
-                                return Optional.empty();
+                                return null;
                             }
                         } else {
                             CompressedNode<K, V> rn = cn.generation == gen ? cn : cn.renewed(gen, trie);
-                            CompressedNode<K, V> nn = rn.updatedAt(pos, inode(CNodeUtil.createDualNode(sn, sn.hashCode(), new SingletonNode<>(k, v, hc), hc, lev + 5, gen)), gen);
+                            MainNode<K, V> nn = rn.updatedAt(pos, inode(CNodeUtil.createDualNode(sn, sn.getHash(), new SingletonNode<>(k, v, hc), hc, lev + 5, gen)), gen);
                             if (compareAndSetWithFinalize(cn, nn, trie)) {
                                 return Optional.empty();
                             } else {
-                                return Optional.empty();
+                                return null;
                             }
                         }
                     } else if (cond == INodeUtil.KEY_ABSENT) {
-                        if (sn.hashCode() == hc && sn.getKeyValuePair().getKey().equals(k)) {
-                            return Optional.of(sn.getKeyValuePair().getValue());
+                        if (sn.getHash() == hc && sn.getKey().equals(k)) {
+                            return Optional.of(sn.getValue());
                         } else {
                             CompressedNode<K,V> rn = cn.generation == gen ? cn : cn.renewed(gen, trie);
-                            CompressedNode<K,V> nn = rn.updatedAt(pos, inode(CNodeUtil.createDualNode(sn, sn.hashCode(), new SingletonNode<>(k, v, hc), hc, lev + 5, gen)), gen);
+                            MainNode<K,V> nn = rn.updatedAt(pos, inode(CNodeUtil.createDualNode(sn, sn.getHash(), new SingletonNode<>(k, v, hc), hc, lev + 5, gen)), gen);
                             if (compareAndSetWithFinalize(cn, nn, trie)) {
                                 return Optional.empty();
                             } else {
-                                return Optional.empty();
+                                return null;
                             }
                         }
                     } else if (cond == INodeUtil.KEY_PRESENT) {
-                        if (sn.hashCode() == hc && sn.getKeyValuePair().getKey().equals(k)) {
+                        if (sn.getHash() == hc && sn.getKey().equals(k)) {
                             if (compareAndSetWithFinalize(cn, cn.updatedAt(pos, new SingletonNode<>(k, v, hc), gen), trie)) {
-                                return Optional.of(sn.getKeyValuePair().getValue());
+                                return Optional.of(sn.getValue());
                             } else {
-                                return Optional.empty();
+                                return null;
                             }
                         } else {
                             return Optional.empty();
@@ -215,11 +217,11 @@ public final class IndirectionNode<K,V> extends BasicNode {
                     } else {
                         @SuppressWarnings("unchecked")
                         V otherv = (V) cond;
-                        if (sn.hashCode() == hc && sn.getKeyValuePair().getKey().equals(k) && sn.getKeyValuePair().getValue().equals(otherv)) {
+                        if (sn.getHash() == hc && sn.getKey().equals(k) && sn.getValue().equals(otherv)) {
                             if (compareAndSetWithFinalize(cn, cn.updatedAt(pos, new SingletonNode<>(k, v, hc), gen), trie)) {
-                                return Optional.of(sn.getKeyValuePair().getValue());
+                                return Optional.of(sn.getValue());
                             } else {
-                                return Optional.empty();
+                                return null;
                             }
                         } else {
                             return Optional.empty();
@@ -232,7 +234,7 @@ public final class IndirectionNode<K,V> extends BasicNode {
                 if (compareAndSetWithFinalize(cn, ncnode, trie)) {
                     return Optional.empty();
                 } else {
-                    return Optional.empty();
+                    return null;
                 }
             } else if (cond == INodeUtil.KEY_PRESENT) {
                 return Optional.empty();
@@ -241,17 +243,45 @@ public final class IndirectionNode<K,V> extends BasicNode {
             }
         } else if (m instanceof TombNode<K,V>) {
             clean(parent, trie, lev - 5);
-            return Optional.empty();
+            return null;
         } else if (m instanceof ListNode<K,V>) {
             ListNode<K,V> ln = (ListNode<K,V>) m;
-            ListNode<K,V> nn = ln.inserted(k, v);
-            if (compareAndSetWithFinalize(ln, nn, trie)) {
-                return Optional.of(ln.get(k));
+            V vValue = ln.get(k);
+            if (cond == null) {
+                if (insertln(ln, k, v, trie))
+                    return Optional.of(vValue);
+                return null;
+            } else if (cond == INodeUtil.KEY_ABSENT) {
+                if (vValue == null) {
+                    if (insertln(ln, k, v, trie))
+                        return Optional.empty();
+                    return null;
+                }
+                return Optional.of(vValue);
+            } else if (cond == INodeUtil.KEY_PRESENT) {
+                if (vValue != null) {
+                    if (insertln(ln, k, v, trie))
+                        return Optional.of(vValue);
+                    return null;
+                }
+                return null;
             } else {
-                return Optional.empty();
+                if (vValue != null) {
+                    if (vValue == cond) {
+                        if (insertln(ln, k, v, trie))
+                            return Optional.of(vValue);
+                        return null;
+                    }
+                    return Optional.empty();
+                }
             }
         }
         return Optional.empty();
+    }
+
+    private boolean insertln(ListNode<K, V> listNode, K k, V v,  ConcurrentTrie<K, V> trie) {
+        ListNode<K, V> nn = listNode.inserted(k, v);
+        return compareAndSetWithFinalize(listNode, nn, trie);
     }
 
     public final Object recLookup(K k, int hc, int lev, IndirectionNode<K,V> parent, Generation startGen, ConcurrentTrie<K,V> trie) {
@@ -264,7 +294,7 @@ public final class IndirectionNode<K,V> extends BasicNode {
             if ((bmp & flag) == 0) {
                 return null;
             } else {
-                int pos = Integer.bitCount(bmp & (flag - 1));
+                int pos = (bmp == 0xffffffff) ? idx : Integer.bitCount (bmp & (flag - 1));
                 BasicNode sub = cn.array[pos];
                 if (sub instanceof IndirectionNode) {
                     IndirectionNode<K,V> in = (IndirectionNode<K,V>) sub;
@@ -279,8 +309,8 @@ public final class IndirectionNode<K,V> extends BasicNode {
                     }
                 } else if (sub instanceof SingletonNode<?,?>) {
                     SingletonNode<K,V> sn = (SingletonNode<K, V>) sub;
-                    if (sn.hashCode() == hc && sn.getKeyValuePair().getKey().equals(k)) {
-                        return sn.getKeyValuePair().getValue();
+                    if (sn.getHash() == hc && sn.getKey().equals(k)) {
+                        return sn.getValue();
                     } else {
                         return null;
                     }
@@ -292,21 +322,20 @@ public final class IndirectionNode<K,V> extends BasicNode {
                 return RESTART;
             } else {
                 TombNode<K,V> tn = (TombNode<K,V>) m;
-                if (tn.hashCode() == hc && tn.getKeyValuePair().getKey().equals(k)) {
-                    return tn.getKeyValuePair().getValue();
+                if (tn.getHash() == hc && tn.getKey().equals(k)) {
+                    return tn.getValue();
                 } else {
                     return null;
                 }
             }
         } else if (m instanceof ListNode<K,V>) {
-            ListNode<K, V> ln = (ListNode<K, V>) m;
-            return ln.get(k) != null ? ln.get(k) : null;
+            return ((ListNode<K, V>) m).get(k);
         }
-        return null;
+        throw new RuntimeException("Out of all cases defined.");
     }
 
-    public final Optional<V> recRemove(K k, V v, int hc, int lev, IndirectionNode<K, V> parent, Generation startgen, ConcurrentTrie<K, V> ct) {
-        MainNode<K, V> m = readCommittedMainNode(ct); // use -Yinline!
+    public final Optional<V> recRemove(K k, V v, int hc, int lev, IndirectionNode<K, V> parent, Generation startgen, ConcurrentTrie<K, V> trie) {
+        MainNode<K, V> m = readCommittedMainNode(trie); // use -Yinline!
 
         if (m instanceof CompressedNode) {
             CompressedNode<K, V> cn = (CompressedNode<K, V>) m;
@@ -318,40 +347,41 @@ public final class IndirectionNode<K,V> extends BasicNode {
             } else {
                 int pos = Integer.bitCount(bmp & (flag - 1));
                 BasicNode sub = cn.array[pos];
-                Optional<V> res = Optional.empty();
+                Optional<V> res = null;
                 if (sub instanceof IndirectionNode) {
                     IndirectionNode<K, V> in = (IndirectionNode<K, V>) sub;
                     if (startgen == in.gen) {
-                        res = in.recRemove(k, v, hc, lev + 5, this, startgen, ct);
+                        res = in.recRemove(k, v, hc, lev + 5, this, startgen, trie);
                     } else {
-                        if (compareAndSetWithFinalize(cn, cn.renewed(startgen, ct), ct)) {
-                            res = recRemove(k, v, hc, lev, parent, startgen, ct);
-                        } else {
-                            return Optional.empty();
-                        }
+                        if (compareAndSetWithFinalize(cn, cn.renewed(startgen, trie), trie))
+                            res = recRemove(k, v, hc, lev, parent, startgen, trie);
                     }
                 } else if (sub instanceof SingletonNode<?,?>) {
                     SingletonNode<K, V> sn = (SingletonNode<K, V>) sub;
-                    if (sn.hashCode() == hc && sn.getKeyValuePair().getKey().equals(k) && (v == null || sn.getKeyValuePair().getValue().equals(v))) {
+                    if (sn.getHash() == hc && sn.getKey().equals(k) && (v == null || sn.getValue().equals(v))) {
                         @SuppressWarnings("unchecked")
-                        CompressedNode<K, V> ncn = (CompressedNode<K, V>) cn.removedAt(pos, flag, gen).toContracted(lev);
-                        if (compareAndSetWithFinalize(cn, ncn, ct)) {
-                            res = Optional.of(sn.getKeyValuePair().getValue());
-                        } else {
-                            return Optional.empty();
+                        MainNode<K, V> ncn = (MainNode<K, V>) cn.removedAt(pos, flag, gen).toContracted(lev);
+                        if (compareAndSetWithFinalize(cn, ncn, trie)) {
+                            res = Optional.of(sn.getValue());
                         }
+                    } else {
+                        return Optional.empty();
                     }
                 }
 
-                if (!res.isPresent()) {
+                if (res == null || !res.isPresent()) {
                     return res;
                 } else {
-                    cleanParent(this, res, parent, hc, lev, startgen, ct);
+                    if (parent != null) {
+                        MainNode<K, V> n = readCommittedMainNode(trie);
+                        if (n instanceof TombNode<?,?>)
+                            cleanParent(this, res, parent, hc, lev, startgen, trie);
+                    }
                     return res;
                 }
             }
         } else if (m instanceof TombNode<K,V>) {
-            clean(parent, ct, lev - 5);
+            clean(parent, trie, lev - 5);
             return Optional.empty();
         } else if (m instanceof ListNode) {
             ListNode<K, V> ln = (ListNode<K, V>) m;
@@ -359,7 +389,7 @@ public final class IndirectionNode<K,V> extends BasicNode {
                 @SuppressWarnings("unchecked")
                 Optional<V> optv = (Optional<V>) Optional.ofNullable(ln.get(k));
                 ListNode<K, V> nn = (ListNode<K, V>) ln.removed(k);
-                if (compareAndSetWithFinalize(ln, nn, ct)) {
+                if (compareAndSetWithFinalize(ln, nn, trie)) {
                     return optv;
                 } else {
                     return Optional.empty();
@@ -369,7 +399,7 @@ public final class IndirectionNode<K,V> extends BasicNode {
                 Optional<V> optv = (Optional<V>) Optional.ofNullable(ln.get(k));
                 if (optv.isPresent() && optv.get().equals(v)) {
                     ListNode<K, V> nn = (ListNode<K, V>) ln.removed(k);
-                    if (compareAndSetWithFinalize(ln, nn, ct)) {
+                    if (compareAndSetWithFinalize(ln, nn, trie)) {
                         return optv;
                     } else {
                         return Optional.empty();
@@ -392,31 +422,38 @@ public final class IndirectionNode<K,V> extends BasicNode {
         }
     }
 
-    private void cleanParentRecursive(IndirectionNode<K, V> parent, int hc, int lev, TombNode<K, V> nonlive, Generation startgen, ConcurrentTrie<K, V> ct) {
+    private void cleanParentRecursive(IndirectionNode<K, V> parent, int hc, int lev, Object nonlive, Generation startgen, ConcurrentTrie<K, V> ct) {
         MainNode<K, V> pm = parent.readCommittedMainNode(ct);
         if (pm instanceof CompressedNode) {
             CompressedNode<K, V> cn = (CompressedNode<K, V>) pm;
             int idx = (hc >>> lev) & 0x1f;
             int bmp = cn.bitmap;
             int flag = 1 << idx;
-            if ((bmp & flag) != 0) {
-                int pos = Integer.bitCount(bmp & (flag - 1));
-                BasicNode sub = cn.array[pos];
-                if (sub == this) {
-                    @SuppressWarnings("unchecked")
-                    CompressedNode<K, V> ncn = (CompressedNode<K, V>) cn.updatedAt(pos, nonlive.copyUntombed(), gen).toContracted(lev);
-                    if (!parent.compareAndSetWithFinalize(cn, ncn, ct) && ct.RDCSS_READ_ROOT(false).gen == startgen) {
-                        cleanParentRecursive(parent, hc, lev, nonlive, startgen, ct);
+            if ((bmp & flag) == 0)
+                // Nothing to remove. Return.
+                return;
+            // Work on cleaning up.
+            int pos = Integer.bitCount(bmp & (flag - 1));
+            BasicNode sub = cn.array[pos];
+            if (sub == this) {
+                if (nonlive instanceof TombNode<?,?>) {
+                    TombNode<K, V> tombNode = (TombNode<K, V>) nonlive;
+                    MainNode<K, V> ncn = (MainNode<K, V>) cn.updatedAt(pos, tombNode.copyUntombed(), gen).toContracted(lev - 5);
+                    if (!parent.compareAndSetWithFinalize(cn, ncn, ct)) {
+                        if (ct.RDCSS_READ_ROOT(false).gen == startgen)
+                            cleanParentRecursive(parent, hc, lev, nonlive, startgen, ct);
                     }
                 }
             }
+        } else {
+            // Do nothing.
         }
     }
 
     private void clean(IndirectionNode<K,V> nd, ConcurrentTrie<K,V> ct, int lev) {
         MainNode<K,V> m = nd.readCommittedMainNode(ct);
-        if (m instanceof CompressedNode) {
-            nd.compareAndSetWithFinalize((MainNode<K, V>) m, (MainNode<K, V>) ((CompressedNode<K,V>) m).toCompressed(ct, lev, gen), ct);
+        if (m instanceof CompressedNode<?,?>) {
+            nd.compareAndSetWithFinalize(m, (MainNode<K, V>) ((CompressedNode<K,V>) m).toCompressed(ct, lev, gen), ct);
         }
     }
 
@@ -433,7 +470,7 @@ public final class IndirectionNode<K,V> extends BasicNode {
             sb.append("<null>");
         } else if (mainnode instanceof TombNode<K,V>) {
             TombNode<K,V> tn = (TombNode<K, V>) mainnode;
-            sb.append("TNode(").append(tn.getKeyValuePair().getKey()).append(", ").append(tn.getKeyValuePair().getValue()).append(", ").append(tn.hashCode()).append(", !)");
+            sb.append("TNode(").append(tn.getKey()).append(", ").append(tn.getValue()).append(", ").append(tn.getHash()).append(", !)");
         } else if (mainnode instanceof CompressedNode) {
             CompressedNode<K,V> cn = (CompressedNode<K,V>) mainnode;
             sb.append(cn.string(lev));
@@ -465,7 +502,7 @@ public final class IndirectionNode<K,V> extends BasicNode {
             mainNodeString = "<null>";
         } else if (mainNode instanceof TombNode) {
             TombNode<K, V> tn = (TombNode<K, V>) mainNode;
-            mainNodeString = String.format("TombNode(%s, %s, %d, !)", tn.getKeyValuePair().getKey(), tn.getKeyValuePair().getValue(), tn.hashCode());
+            mainNodeString = String.format("TombNode(%s, %s, %d, !)", tn.getKey(), tn.getValue(), tn.getHash());
         } else if (mainNode instanceof CompressedNode) {
             CompressedNode<K, V> cn = (CompressedNode<K, V>) mainNode;
             mainNodeString = cn.toString(level);

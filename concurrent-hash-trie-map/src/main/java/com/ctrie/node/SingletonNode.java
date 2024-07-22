@@ -73,6 +73,10 @@ public final class SingletonNode<K, V> extends BasicNode implements KeyValueNode
         return value;
     }
 
+    public int getHash() {
+        return hash;
+    }
+
     @Override
     public String toString(int level) {
         return " ".repeat(level) + "SingletonNode(" + key + ", " + value + ", " + Integer.toHexString(hash) + ")";

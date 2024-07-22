@@ -91,6 +91,10 @@ public final class ListNode<K, V> extends MainNode<K, V> {
         return listMap.get(key);
     }
 
+    public int cachedSize (Object ct) {
+        return listMap.size ();
+    }
+
     @Override
     public String toString(int level) {
         return " ".repeat(level) + "ListNode(" + listMap.toString() + ")";

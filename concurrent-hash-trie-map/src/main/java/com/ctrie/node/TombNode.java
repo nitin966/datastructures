@@ -72,6 +72,14 @@ public final class TombNode<K, V> extends MainNode<K, V> implements KeyValueNode
         return value;
     }
 
+    public int getHash() {
+        return hash;
+    }
+
+    public int cachedSize (Object ct) {
+        return 1;
+    }
+
     @Override
     public String toString(int level) {
         return " ".repeat(level) + "TombNode(" + key + ", " + value + ", " + Integer.toHexString(hash) + ", !)";
