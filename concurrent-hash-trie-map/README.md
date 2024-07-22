@@ -31,7 +31,7 @@ The project is organized into several core components:
 Clone the repository and build the project using your preferred build tool (e.g., Maven or Gradle).
 
 ```sh
-git clone https://github.com/yourusername/datastructures.git
+git clone https://github.com/nitin966/datastructures.git
 cd datastructures/concurrent-hash-trie-map
 ```
 
