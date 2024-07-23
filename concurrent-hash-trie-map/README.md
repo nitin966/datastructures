@@ -74,6 +74,17 @@ Contributions are welcome! Please fork the repository and submit pull requests f
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
+## Citation
+
+If you use this code or refer to it in any form, please cite the original paper and the original Scala implementation:
+- Prokopec, A. (2012). A Lock-Free, Concurrent, and Practical Hash-Trie Design. Retrieved from http://aleksandar-prokopec.com/resources/docs/ctries-snapshot.pdf
+- Prokopec, A. (2012). Scala CTries. GitHub repository. Retrieved from https://github.com/axel22/Ctries
+
+Additionally, please include the following attribution in your work:
+```
+This product includes software developed by Nitin Kesarwani ([https://github.com/nitin966]).
+```
+
 ## Acknowledgements
 
 This project is heavily inspired by the work of Aleksandar Prokopec and his [Scala implementation of CTries](https://github.com/axel22/Ctries). We thank him for his pioneering work in the field of concurrent data structures.
